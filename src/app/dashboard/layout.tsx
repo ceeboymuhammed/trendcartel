@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 import {
   Search,
   Sparkles,
@@ -20,9 +21,11 @@ import {
   Clock,
   Menu,
   X,
+  LogOut,
+  Loader2,
 } from "lucide-react";
 import UpgradePlanModal from "@/components/UpgradePlanModal";
-import { PlanTier } from "@/lib/billing/plans";
+import { useWallet } from "@/hooks/useWallet";
 
 export default function DashboardLayout({
   children,
@@ -30,13 +33,58 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
-  // Prototype defaults (replace with live Supabase wallet hook once Auth is wired)
-  const [planTier] = useState<PlanTier>("free");
-  const [credits] = useState<number>(25);
-  const [userEmail] = useState<string>("");
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [userEmail, setUserEmail] = useState<string>("");
+  const { wallet } = useWallet();
+
+  useEffect(() => {
+    let mounted = true;
+
+    const verifySession = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!mounted) return;
+
+      if (!user) {
+        router.replace(
+          `/login?redirect=${encodeURIComponent(pathname || "/dashboard/discovery")}`
+        );
+        return;
+      }
+
+      setUserEmail(user.email || "");
+      setCheckingAuth(false);
+    };
+
+    verifySession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) {
+        router.replace("/login");
+      } else {
+        setUserEmail(session.user.email || "");
+        setCheckingAuth(false);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, [pathname, router]);
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  };
 
   const navTools = [
     {
@@ -82,6 +130,15 @@ export default function DashboardLayout({
       color: "text-emerald-400",
     },
   ];
+
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-300 gap-3">
+        <Loader2 className="w-7 h-7 text-emerald-400 animate-spin" />
+        <span className="text-xs font-medium">Verifying TrendCartel session...</span>
+      </div>
+    );
+  }
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full justify-between bg-slate-950 text-slate-200 w-64 p-4 border-r border-slate-800/80">
@@ -193,7 +250,7 @@ export default function DashboardLayout({
               }`}
             >
               <Trophy className="w-4 h-4 text-amber-400" />
-              <span>Leaderboard & Proof</span>
+              <span>Leaderboard &amp; Proof</span>
             </Link>
             <Link
               href="/dashboard/community"
@@ -217,7 +274,7 @@ export default function DashboardLayout({
               }`}
             >
               <HelpCircle className="w-4 h-4 text-emerald-400" />
-              <span>Help & Support</span>
+              <span>Help &amp; Support</span>
             </Link>
             <Link
               href="/dashboard/settings"
@@ -235,31 +292,46 @@ export default function DashboardLayout({
         </div>
       </div>
 
-      {/* Bottom Wallet & WhatsApp Subscribe Card */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5 space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold text-slate-400 uppercase">
-            {planTier === "free" ? "Free Trial" : `${planTier} Plan`}
-          </span>
-          <span className="inline-flex items-center gap-1 text-xs font-extrabold text-amber-400">
-            <Coins className="w-3.5 h-3.5" /> {credits} cr
-          </span>
+      {/* Bottom Wallet, WhatsApp Subscribe & Sign Out */}
+      <div className="space-y-3 pt-4">
+        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3.5 space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-bold text-slate-400 uppercase">
+              {wallet.planTier === "free" ? "Free Trial" : `${wallet.planTier} Plan`}
+            </span>
+            <span className="inline-flex items-center gap-1 text-xs font-extrabold text-amber-400">
+              <Coins className="w-3.5 h-3.5" /> {wallet.credits} cr
+            </span>
+          </div>
+
+          {wallet.planTier === "free" && (
+            <div className="text-[10px] text-slate-400 flex items-center gap-1.5 bg-slate-950/70 px-2.5 py-1.5 rounded-lg border border-slate-800">
+              <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+              <span>1 tool max · 7-day task retention</span>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setShowUpgradeModal(true)}
+            className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold transition shadow-xs"
+          >
+            Subscribe / Add Credits
+          </button>
         </div>
 
-        {planTier === "free" && (
-          <div className="text-[10px] text-slate-400 flex items-center gap-1.5 bg-slate-950/70 px-2.5 py-1.5 rounded-lg border border-slate-800">
-            <Clock className="w-3 h-3 text-amber-400 shrink-0" />
-            <span>1 tool max · 7-day task retention</span>
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={() => setShowUpgradeModal(true)}
-          className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold transition shadow-xs"
-        >
-          Subscribe / Add Credits
-        </button>
+        <div className="flex items-center justify-between px-2 text-[11px] text-slate-400">
+          <span className="truncate max-w-[155px]" title={userEmail}>
+            {userEmail || "Signed In"}
+          </span>
+          <button
+            type="button"
+            onClick={handleSignOut}
+            className="inline-flex items-center gap-1 text-slate-400 hover:text-rose-400 font-semibold transition"
+          >
+            <LogOut className="w-3.5 h-3.5" /> Sign Out
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -303,7 +375,7 @@ export default function DashboardLayout({
             onClick={() => setShowUpgradeModal(true)}
             className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-bold"
           >
-            ⚡ {credits} cr · Upgrade
+            ⚡ {wallet.credits} cr · Upgrade
           </button>
         </header>
 
@@ -314,8 +386,8 @@ export default function DashboardLayout({
       <UpgradePlanModal
         isOpen={showUpgradeModal}
         onClose={() => setShowUpgradeModal(false)}
-        currentTier={planTier}
-        currentCredits={credits}
+        currentTier={wallet.planTier}
+        currentCredits={wallet.credits}
         userEmail={userEmail}
       />
     </div>
