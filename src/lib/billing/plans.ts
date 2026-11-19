@@ -43,7 +43,7 @@ export const SUBSCRIPTION_PLANS = {
     name: "Creator Plan",
     credits: 100,
     priceNGN: "₦15,000 / mo",
-    priceUSD: "$24 / mo",
+    priceUSD: "$9 / mo",
     retentionDays: null, // Unlimited retention
     features: [
       "100 monthly wallet credits",
@@ -57,7 +57,7 @@ export const SUBSCRIPTION_PLANS = {
     name: "Agency / Pro Plan",
     credits: 500,
     priceNGN: "₦38,000 / mo",
-    priceUSD: "$59 / mo",
+    priceUSD: "$29 / mo",
     retentionDays: null, // Unlimited retention
     features: [
       "500 monthly wallet credits",

@@ -1,4 +1,3 @@
-// src/lib/billing/enforceCredits.ts
 import { createClient } from "@supabase/supabase-js";
 import { PlanTier, ToolKey } from "./plans";
 
@@ -21,7 +20,7 @@ export async function verifyAndDeductCredits(params: {
   toolKey: ToolKey;
   creditCost: number;
 }): Promise<EnforcementResult> {
-  const { userId, toolKey, creditCost } = params;
+  const { userId, creditCost } = params;
 
   if (!userId) {
     return {
@@ -49,22 +48,7 @@ export async function verifyAndDeductCredits(params: {
 
   const planTier = wallet.plan_tier as PlanTier;
 
-  // 1. Enforce Free-Tier Single-Tool Rule
-  if (planTier === "free") {
-    if (wallet.free_active_tool && wallet.free_active_tool !== toolKey) {
-      return {
-        allowed: false,
-        status: 403,
-        code: "FREE_TIER_TOOL_LOCKED",
-        planTier,
-        remainingCredits: wallet.credits_balance,
-        error:
-          "Free accounts can use 1 tool only. Subscribe via WhatsApp to unlock all TrendCartel tools.",
-      };
-    }
-  }
-
-  // 2. Enforce Credit Balance Check
+  // 1. Enforce Credit Balance Check (Users can freely spend remaining credits across any tool)
   if (wallet.credits_balance < creditCost) {
     return {
       allowed: false,
@@ -76,26 +60,25 @@ export async function verifyAndDeductCredits(params: {
     };
   }
 
-  // 3. Deduct Credits & Lock Free Tool if First Use
-  const nextBalance = wallet.credits_balance - creditCost;
-  const nextFreeTool =
-    planTier === "free" ? wallet.free_active_tool || toolKey : wallet.free_active_tool;
+  // 2. Deduct Credits (Skip DB update if action is free / 0 credits)
+  const nextBalance = Math.max(0, wallet.credits_balance - creditCost);
 
-  const { error: updateError } = await supabaseAdmin
-    .from("user_wallets")
-    .update({
-      credits_balance: nextBalance,
-      free_active_tool: nextFreeTool,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId);
+  if (creditCost > 0) {
+    const { error: updateError } = await supabaseAdmin
+      .from("user_wallets")
+      .update({
+        credits_balance: nextBalance,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("user_id", userId);
 
-  if (updateError) {
-    return {
-      allowed: false,
-      status: 500,
-      error: "Could not update wallet credits. Please try again.",
-    };
+    if (updateError) {
+      return {
+        allowed: false,
+        status: 500,
+        error: "Could not update wallet credits. Please try again.",
+      };
+    }
   }
 
   return {

@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateWithDualLLM } from "@/lib/ai/llmRouter";
-import { TOOL_CREDIT_COSTS } from "@/lib/billing/plans";
 import { verifyAndDeductCredits } from "@/lib/billing/enforceCredits";
 
-async function fetchLiveNicheContext(topic: string, country: string) {
-  const serperKey = process.env.SERPER_API_KEY;
+async function fetchLiveNicheContext(topic: string) {
+  const serperKey = (process.env.SERPER_API_KEY || "").replace(/^["']|["']$/g, "").trim();
   if (!serperKey) return { discussions: [], existingProducts: [] };
 
   try {
+    console.log(`[Ideas API] Fetching live Serper context for "${topic}"...`);
     const [forumRes, marketRes] = await Promise.all([
       fetch("https://google.serper.dev/search", {
         method: "POST",
@@ -16,6 +16,7 @@ async function fetchLiveNicheContext(topic: string, country: string) {
           q: `(site:nairaland.com OR site:x.com OR site:reddit.com) "${topic}" problems OR how to`,
           num: 6,
         }),
+        signal: AbortSignal.timeout(5000),
       }),
       fetch("https://google.serper.dev/search", {
         method: "POST",
@@ -24,6 +25,7 @@ async function fetchLiveNicheContext(topic: string, country: string) {
           q: `(site:selar.com OR site:gumroad.com OR site:etsy.com) "${topic}"`,
           num: 6,
         }),
+        signal: AbortSignal.timeout(5000),
       }),
     ]);
 
@@ -34,9 +36,15 @@ async function fetchLiveNicheContext(topic: string, country: string) {
       discussions: (forumJson.organic || []).map((i: any) => `${i.title}: ${i.snippet}`),
       existingProducts: (marketJson.organic || []).map((i: any) => `${i.title} (${i.link})`),
     };
-  } catch {
+  } catch (err) {
+    console.warn("[Ideas API] Serper timed out or skipped, continuing to Gemini...");
     return { discussions: [], existingProducts: [] };
   }
+}
+
+function safeParseJson(raw: string) {
+  const cleaned = raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+  return JSON.parse(cleaned);
 }
 
 export async function POST(req: NextRequest) {
@@ -55,9 +63,9 @@ export async function POST(req: NextRequest) {
       userId,
     } = body;
 
-    // 1. Enforce 3 credits & Free-Tier 1-tool limit BEFORE running Serper/LLM
-    const creditCost = TOOL_CREDIT_COSTS.monetisation_ideas; // 3 credits
-    if (userId && userId !== "guest-trial-user") {
+    // 1. Idea generation is free (0 credits); credits are only deducted when building a format
+    const creditCost = 0;
+    if (userId && userId !== "guest-trial-user" && creditCost > 0) {
       const authCheck = await verifyAndDeductCredits({
         userId,
         toolKey: "monetisation",
@@ -72,14 +80,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const liveContext = await fetchLiveNicheContext(niche, country);
+    const liveContext = await fetchLiveNicheContext(niche);
 
     const audienceStrategy =
       hasAudience === "yes"
         ? `USER HAS AN EXISTING AUDIENCE: Focus on higher-value transformation kits, premium workshops, or comprehensive bundles ($27–$67 / ₦10,000–₦25,000) that leverage warm trust and direct conversion.`
         : `USER HAS NO AUDIENCE (COLD TRAFFIC): Focus on ultra-specific, impulse-buy "quick-win" templates, checklists, and cheat sheets ($9–$24 / ₦3,500–₦7,500) engineered to sell via marketplace search (Selar/Etsy) and viral short-form hooks without needing followers.`;
 
-    const systemPrompt = `You are a digital product strategist. Using the live forum discussions and competitor listings provided, generate 6 genuinely distinct, hyper-specific digital product ideas.
+   const systemPrompt = `You are a digital product strategist. Using the live forum discussions and competitor listings provided, generate 3 genuinely distinct, hyper-specific digital product ideas. Keep every description and insight crisp (max 25 words per field) for fast execution.
 ${audienceStrategy}
 Return pure valid JSON with NO markdown formatting matching:
 {
@@ -126,6 +134,7 @@ ${liveContext.discussions.join("\n") || "Analyze everyday buyer bottlenecks in t
 Competing Products:
 ${liveContext.existingProducts.join("\n") || "Analyze standard gaps on Selar, Gumroad, and Etsy."}`;
 
+    console.log(`[Ideas API] Sending prompt to LLM Router for "${niche}"...`);
     const rawJson = await generateWithDualLLM({
       systemPrompt,
       userPrompt,
@@ -134,10 +143,11 @@ ${liveContext.existingProducts.join("\n") || "Analyze standard gaps on Selar, Gu
     });
 
     if (rawJson) {
+      const parsed = safeParseJson(rawJson);
       return NextResponse.json({
         success: true,
-        creditsDeducted: creditCost,
-        data: JSON.parse(rawJson),
+        creditsDeducted: 0,
+        data: parsed,
       });
     }
 
@@ -146,6 +156,7 @@ ${liveContext.existingProducts.join("\n") || "Analyze standard gaps on Selar, Gu
       { status: 502 }
     );
   } catch (err: any) {
+    console.error("[Ideas API Error]:", err);
     return NextResponse.json(
       { error: err.message || "Failed to generate product ideas." },
       { status: 500 }

@@ -1,4 +1,3 @@
-// src/lib/ai/llmRouter.ts
 interface LLMRequestOptions {
   systemPrompt: string;
   userPrompt: string;
@@ -6,7 +5,9 @@ interface LLMRequestOptions {
   temperature?: number;
 }
 
-async function fetchWithAbort(url: string, options: RequestInit, timeoutMs = 12000) {
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 45000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -22,52 +23,82 @@ export async function generateWithDualLLM({
   jsonMode = false,
   temperature = 0.65,
 }: LLMRequestOptions): Promise<string | null> {
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const openaiKey = process.env.OPENAI_API_KEY;
+  const rawGeminiKey = process.env.GEMINI_API_KEY || "";
+  const geminiKey = rawGeminiKey.replace(/^["']|["']$/g, "").trim();
 
-  // 1. PRIMARY: Fast, active Gemini Flash models with strict 12s timeout
+  const rawOpenaiKey = process.env.OPENAI_API_KEY || "";
+  const openaiKey = rawOpenaiKey.replace(/^["']|["']$/g, "").trim();
+
   if (geminiKey) {
-    const geminiModels = ["gemini-2.5-flash", "gemini-2.0-flash"];
+    // Only use Flash / Flash-Lite models (Pro models have limit: 0 on Gemini Free Tier)
+    const geminiModels = [
+      "gemini-3.8-flash",
+      "gemini-flash-latest",
+      "gemini-flash-lite-latest",
+    ];
 
     for (const modelName of geminiModels) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          console.log(`[LLM Router] Calling ${modelName} (attempt ${attempt})...`);
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${geminiKey}`;
 
-        const res = await fetchWithAbort(
-          url,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: systemPrompt }] },
-              contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-              generationConfig: {
-                temperature,
-                ...(jsonMode && { responseMimeType: "application/json" }),
+          const bodyPayload: Record<string, unknown> = {
+            systemInstruction: {
+              parts: [{ text: systemPrompt }],
+            },
+            contents: [
+              {
+                role: "user",
+                parts: [{ text: userPrompt }],
               },
-            }),
-          },
-          12000
-        );
+            ],
+            generationConfig: {
+              temperature,
+              ...(jsonMode && { responseMimeType: "application/json" }),
+            },
+          };
 
-        if (res.ok) {
-          const data = await res.json();
-          let text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-          text = text.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
-          if (text) return text;
-        } else if (res.status === 404) {
-          continue;
+          const res = await fetchWithTimeout(
+            url,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(bodyPayload),
+            },
+            45000 // 45s timeout so structured JSON never gets cut off prematurely
+          );
+
+          if (res.ok) {
+            const data = await res.json();
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              console.log(`[LLM Router] Success from ${modelName}`);
+              return text;
+            }
+          } else {
+            const errText = await res.text();
+            console.error(`[Gemini ${modelName} Attempt ${attempt} HTTP ${res.status}]:`, errText);
+
+            if (res.status === 503 && attempt === 1) {
+              await sleep(1500);
+              continue;
+            }
+            break;
+          }
+        } catch (err: any) {
+          console.error(`[Gemini ${modelName} Error/Timeout]:`, err?.name || err?.message || err);
+          break;
         }
-      } catch (err) {
-        console.warn(`Gemini (${modelName}) timed out or failed, trying next...`);
       }
     }
+  } else {
+    console.warn("[LLM Router]: GEMINI_API_KEY is missing in .env.local");
   }
 
-  // 2. SECONDARY FAILOVER: OpenAI API (12s timeout)
   if (openaiKey && openaiKey.startsWith("sk-")) {
     try {
-      const res = await fetchWithAbort(
+      const res = await fetchWithTimeout(
         "https://api.openai.com/v1/chat/completions",
         {
           method: "POST",
@@ -85,7 +116,7 @@ export async function generateWithDualLLM({
             temperature,
           }),
         },
-        12000
+        20000
       );
 
       if (res.ok) {
@@ -94,7 +125,7 @@ export async function generateWithDualLLM({
         if (text) return text;
       }
     } catch (err) {
-      console.warn("OpenAI failover failed:", err);
+      console.error("[OpenAI Error/Timeout]:", err);
     }
   }
 

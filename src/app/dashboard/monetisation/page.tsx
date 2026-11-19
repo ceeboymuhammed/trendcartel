@@ -1,5 +1,6 @@
 "use client";
 
+
 import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -399,12 +400,7 @@ function MonetisationWizardContent() {
       return;
     }
 
-    const ideaCost = TOOL_CREDIT_COSTS.monetisation_ideas; // 3 credits
-    const guard = checkCanRunTool("monetisation", ideaCost);
-    if (!guard.allowed) {
-      setUpgradeReason(guard.reason);
-      return;
-    }
+const ideaCost = 0; // Idea brainstorming is free; credits are only deducted when building a product format
 
     setLoadingText("Consulting 30+ Verified Market Sources...");
     setLoadingProgress(35);
@@ -427,18 +423,13 @@ function MonetisationWizardContent() {
         }),
       });
       const json = await res.json();
-      if (!res.ok) {
-        if (json.code === "FREE_TIER_TOOL_LOCKED" || json.code === "INSUFFICIENT_CREDITS") {
+if (!res.ok) {
+        if (json.code === "INSUFFICIENT_CREDITS") {
           setUpgradeReason(json.code);
           return;
         }
         throw new Error(json.error || "Failed to generate product ideas.");
       }
-
-      recordToolUsage({
-        toolKey: "monetisation",
-        creditCost: ideaCost,
-      });
 
       setAnalysisData(json.data.aiAnalysis);
       setIdeas(json.data.ideas || []);
@@ -455,14 +446,12 @@ function MonetisationWizardContent() {
   };
 
   // Step 4 -> Step 5: Deduct Credits (12 / 20 / 30) & Build Product Structure
-  const handleCommitAndBuildStructure = async () => {
+ const handleCommitAndBuildStructure = async () => {
     const cost = currentFormatObj.credits;
-    const guard = checkCanRunTool("monetisation", cost);
-    if (!guard.allowed) {
-      setUpgradeReason(guard.reason);
+    if (wallet.credits < cost) {
+      setUpgradeReason("INSUFFICIENT_CREDITS");
       return;
     }
-
     setFormError(null);
     setLoadingText(`Deducting ${cost} credits & planning your ${activeFormatLabel} pages...`);
     setLoadingProgress(50);
